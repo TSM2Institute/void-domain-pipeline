@@ -1,0 +1,120 @@
+You are building the VOID-DOMAIN v1 pipeline for TSM2 Institute for Cosmology.
+This is a fresh Python data science project. Stack: numpy, scipy, astropy,
+matplotlib, pandas. No web framework needed.
+
+Your first task is Phase 0: create the project scaffold and sealed manifest module.
+
+---
+
+STEP 1 — Project structure
+
+Create the following directory structure:
+
+void_domain/
+  __init__.py
+  manifest.py         ← you build this now
+  data/               ← empty, add .gitkeep
+  outputs/            ← empty, add .gitkeep
+  checkpoints/        ← empty, add .gitkeep
+  plots/              ← empty, add .gitkeep
+
+main.py               ← stub only (print "VOID-DOMAIN v1 — ready")
+requirements.txt      ← numpy, scipy, astropy, matplotlib, pandas
+
+---
+
+STEP 2 — Build manifest.py
+
+This module locks ALL pipeline parameters. Nothing may be changed after
+this file is committed. Copy values EXACTLY as specified below.
+```python
+# void_domain/manifest.py
+# VOID-DOMAIN v1 — Sealed Manifest
+# Locked: 15 March 2026
+# DO NOT MODIFY after first commit without creating manifest_v2.py
+
+# ── Void Catalogue ──────────────────────────────────────────────────────────
+VOID_CATALOGUE_REF     = "Mao et al. (2017) ApJ 835 161 — SDSS DR12 BOSS"
+VOID_N_EXPECTED        = 1228          # after quality cuts
+VOID_REFF_MIN_HMPC     = 20.0          # h^-1 Mpc
+VOID_REFF_MAX_HMPC     = 100.0         # h^-1 Mpc
+VOID_Z_MIN             = 0.2
+VOID_Z_MAX             = 0.7
+
+# ── Cluster Catalogue ────────────────────────────────────────────────────────
+CLUSTER_CATALOGUE_REF  = "redMaPPer DR8 — Rykoff et al. (2014) ApJ 785 104"
+CLUSTER_MASS_PROXY     = "M200c from richness-lambda conversion"
+
+# ── M_surrounding Definition (Geoffrey Thwaites, confirmed 13 March 2026) ───
+# PRIMARY: annulus method
+ANNULUS_INNER_FACTOR   = 2.0           # inner edge = 2 × R_void
+ANNULUS_OUTER_FACTOR   = 4.0           # outer edge = 4 × R_void
+MASS_UNIT              = 1e14          # solar masses
+
+# SECONDARY (parallel, robustness only)
+SPHERE_FACTOR          = 3.0           # d < 3 × R_void sphere
+# TERTIARY: density-shell integrated mass (implemented separately)
+
+# ── R_void Definition ────────────────────────────────────────────────────────
+# Use catalogue-published R_eff = (3V/4π)^(1/3). Do NOT recompute.
+
+# ── Power-Law Fit ────────────────────────────────────────────────────────────
+SLOPE_TARGET           = 1.0 / 3.0    # α = 0.333...
+FIT_METHOD             = "ODR"         # orthogonal distance regression (primary)
+FIT_METHOD_SECONDARY   = "OLS"         # ordinary least squares (reported alongside)
+
+# ── Provisional Thresholds (to be finalised by Millennium mock) ──────────────
+# Source: Grok Checkpoint 2, 13 March 2026
+# These values are PROVISIONAL. Final values set in finalise_thresholds()
+# after mock calibration completes. Do not use for real-data decisions.
+PROVISIONAL_R_OUTCOME_A     = 0.55     # Pearson r threshold for strong scaling
+PROVISIONAL_R_OUTCOME_B_LO  = 0.35
+PROVISIONAL_R_OUTCOME_B_HI  = 0.55
+PROVISIONAL_CHI2_MAX        = 1.5
+PROVISIONAL_SLOPE_TOL_STAT  = 0.08    # |α − 1/3| < 0.08 practical band
+MIN_N_VOIDS                 = 800      # minimum sample after cuts
+
+# Final thresholds written here after mock calibration:
+FINAL_R_OUTCOME_A      = None          # set by mock calibration
+FINAL_R_OUTCOME_B_LO   = None
+FINAL_R_OUTCOME_B_HI   = None
+FINAL_MOCK_MEDIAN_R    = None
+FINAL_MOCK_95PCT_R     = None
+MOCK_CALIBRATION_DATE  = None
+
+# ── Null Test ────────────────────────────────────────────────────────────────
+NULL_SHUFFLE_N         = 1000
+NULL_BEAT_PERCENTILE   = 95.0          # real fit must beat 95% of shuffles
+RANDOM_SEED            = 20260315      # date-stamped seed, do not change
+
+# ── Simulation Comparison ────────────────────────────────────────────────────
+SIM_NAME               = "Millennium Simulation galaxy mocks + ZOBOV/VIDE finder"
+SIM_URL                = "http://gavo.mpa-garching.mpg.de/Millennium/"
+
+# ── Falsification Statement (to be finalised at Checkpoint 3) ───────────────
+# Placeholder — exact wording locked before real-data run
+FALSIFICATION_STATEMENT = (
+    "PLACEHOLDER — to be sealed at Checkpoint 3 pre-seal review. "
+    "Pattern: if α deviates > 3σ from 1/3 OR real fit fails to beat "
+    "null distribution at 95th percentile, Outcome C is declared."
+)
+
+# ── Robustness Annulus Variants ──────────────────────────────────────────────
+ROBUSTNESS_ANNULI = [
+    (1.5, 3.5),    # inner sensitivity check
+    (2.5, 5.0),    # outer sensitivity check
+]
+
+# ── Minimum Clusters per Void ────────────────────────────────────────────────
+MIN_CLUSTERS_PER_VOID  = 3             # voids with fewer clusters excluded
+```
+
+---
+
+STEP 3 — Verify
+
+Run main.py. It should print "VOID-DOMAIN v1 — ready". Then import manifest.py
+and print SLOPE_TARGET, ANNULUS_INNER_FACTOR, ANNULUS_OUTER_FACTOR, RANDOM_SEED.
+Show me the output.
+
+Do not build anything else yet. Wait for review before Phase 1.
