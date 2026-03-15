@@ -58,8 +58,14 @@ NULL_BEAT_PERCENTILE   = 95.0          # real fit must beat 95% of shuffles
 RANDOM_SEED            = 20260315      # date-stamped seed, do not change
 
 # ── Simulation Comparison ────────────────────────────────────────────────────
-SIM_NAME               = "Millennium Simulation galaxy mocks + ZOBOV/VIDE finder"
-SIM_URL                = "http://gavo.mpa-garching.mpg.de/Millennium/"
+SIM_NAME     = "IllustrisTNG TNG300-1 (public halo catalogues + void finder)"
+SIM_URL      = "https://www.tng-project.org/data/downloads/TNG300-1/"
+SIM_SNAPSHOT = 67          # z ≈ 0.5, centre of BOSS redshift window 0.2–0.7
+SIM_VERSION  = "v1.1 — updated 15 March 2026, Millennium replaced by TNG300-1"
+SIM_VOID_CATALOGUE_REF = (
+    "Rodriguez-Medrano et al. (2024) MNRAS — TNG300 void catalogue; "
+    "fallback: VIDE/ZOBOV applied to TNG300-1 snapshot 67 FoF groups"
+)
 
 # ── Falsification Statement (to be finalised at Checkpoint 3) ───────────────
 # Placeholder — exact wording locked before real-data run
