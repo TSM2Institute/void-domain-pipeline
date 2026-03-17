@@ -1,11 +1,14 @@
 import os
-import gzip
 import numpy as np
 import pandas as pd
 import requests
-from astropy.io import fits
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
+
+MAO_VOIDS_PATH = os.path.join(DATA_DIR, "mao2017_boss_voids.dat")
+MAO_README_PATH = os.path.join(DATA_DIR, "mao2017_ReadMe.txt")
+REDMAPPER_PATH = os.path.join(DATA_DIR, "redmapper_dr8_vizier.dat")
+REDMAPPER_README_PATH = os.path.join(DATA_DIR, "redmapper_dr8_ReadMe.txt")
 
 
 def download_file(urls, save_path, chunk_size=1024 * 1024, progress_interval_mb=10):
@@ -30,104 +33,116 @@ def download_file(urls, save_path, chunk_size=1024 * 1024, progress_interval_mb=
     return None, None
 
 
+def download_vizier_tsv(vizier_table, save_path, timeout=120):
+    os.makedirs(os.path.dirname(save_path), exist_ok=True)
+    url = "https://vizier.cds.unistra.fr/viz-bin/asu-tsv"
+    params = {
+        "-source": vizier_table,
+        "-out.max": "unlimited",
+        "-out": "**",
+    }
+    try:
+        resp = requests.get(url, params=params, timeout=timeout)
+        resp.raise_for_status()
+        with open(save_path, "wb") as f:
+            f.write(resp.content)
+        return len(resp.content)
+    except (requests.RequestException, OSError) as e:
+        print(f"  FAILED VizieR query for {vizier_table}: {e}")
+        return None
+
+
 def run():
     print("=" * 60)
     print("VOID-DOMAIN v1 — Real Data Acquisition")
     print("=" * 60)
 
     print("\n--- STEP 1: Mao et al. (2017) BOSS DR12 void catalogue ---")
-    voids_path = os.path.join(DATA_DIR, "mao2017_boss_voids.dat")
-    voids_urls = [
-        "https://cdsarc.cds.unistra.fr/ftp/J/ApJ/835/161/table1.dat",
-        "https://cdsarc.u-strasbg.fr/ftp/J/ApJ/835/161/table1.dat",
-    ]
-    nbytes, used_url = download_file(voids_urls, voids_path, progress_interval_mb=0)
+    nbytes, _ = download_file(
+        [
+            "https://cdsarc.cds.unistra.fr/ftp/J/ApJ/835/161/table1.dat",
+            "https://cdsarc.u-strasbg.fr/ftp/J/ApJ/835/161/table1.dat",
+        ],
+        MAO_VOIDS_PATH,
+        progress_interval_mb=0,
+    )
     if nbytes:
         print(f"Mao 2017 void catalogue downloaded: {nbytes // 1024} KB")
     else:
         print("ERROR: All Mao 2017 void catalogue URLs failed.")
 
-    print("\n--- STEP 2: VizieR ReadMe ---")
-    readme_path = os.path.join(DATA_DIR, "mao2017_ReadMe.txt")
-    readme_urls = [
-        "https://cdsarc.cds.unistra.fr/ftp/J/ApJ/835/161/ReadMe",
-        "https://cdsarc.u-strasbg.fr/ftp/J/ApJ/835/161/ReadMe",
-    ]
-    nbytes_rm, _ = download_file(readme_urls, readme_path, progress_interval_mb=0)
+    print("\n--- STEP 2: Mao 2017 ReadMe ---")
+    nbytes_rm, _ = download_file(
+        [
+            "https://cdsarc.cds.unistra.fr/ftp/J/ApJ/835/161/ReadMe",
+            "https://cdsarc.u-strasbg.fr/ftp/J/ApJ/835/161/ReadMe",
+        ],
+        MAO_README_PATH,
+        progress_interval_mb=0,
+    )
     if nbytes_rm:
         print("ReadMe downloaded")
     else:
         print("ERROR: ReadMe download failed.")
 
-    print("\n--- STEP 3: redMaPPer DR8 cluster catalogue ---")
-    rm_path_v63 = os.path.join(DATA_DIR, "redmapper_dr8_v6.3.fits.gz")
-    rm_path_v510 = os.path.join(DATA_DIR, "redmapper_dr8_v5.10.fits.gz")
-
-    nbytes_rm_cat, used_rm_url = download_file(
-        [
-            "http://risa.stanford.edu/redmapper/redmapper_dr8_public_v6.3_catalog.fits.gz",
-            "https://risa.stanford.edu/redmapper/redmapper_dr8_public_v6.3_catalog.fits.gz",
-        ],
-        rm_path_v63,
-        progress_interval_mb=10,
+    print("\n--- STEP 3: redMaPPer DR8 cluster catalogue (VizieR TSV) ---")
+    nbytes_rm_cat = download_vizier_tsv(
+        "J/ApJ/785/104/table1",
+        REDMAPPER_PATH,
     )
-    rm_path = rm_path_v63
-    if not nbytes_rm_cat:
-        print("  v6.3 failed, trying v5.10...")
-        nbytes_rm_cat, used_rm_url = download_file(
-            [
-                "http://risa.stanford.edu/redmapper/redmapper_dr8_public_v5.10_catalog.fits.gz",
-                "https://risa.stanford.edu/redmapper/redmapper_dr8_public_v5.10_catalog.fits.gz",
-            ],
-            rm_path_v510,
-            progress_interval_mb=10,
-        )
-        rm_path = rm_path_v510
-
     if nbytes_rm_cat:
-        print(f"redMaPPer DR8 downloaded: {nbytes_rm_cat / (1024 * 1024):.1f} MB")
+        print(f"redMaPPer DR8 downloaded: {nbytes_rm_cat // 1024} KB")
     else:
-        print("ERROR: All redMaPPer DR8 URLs failed.")
-        rm_path = None
+        print("ERROR: redMaPPer DR8 download failed.")
 
-    print("\n--- STEP 4: Inspect catalogues ---")
+    print("\n--- STEP 4: redMaPPer ReadMe ---")
+    nbytes_rr, _ = download_file(
+        [
+            "https://cdsarc.cds.unistra.fr/ftp/J/ApJ/785/104/ReadMe",
+            "https://cdsarc.u-strasbg.fr/ftp/J/ApJ/785/104/ReadMe",
+        ],
+        REDMAPPER_README_PATH,
+        progress_interval_mb=0,
+    )
+    if nbytes_rr:
+        print("ReadMe downloaded")
+    else:
+        print("ERROR: redMaPPer ReadMe download failed.")
+
+    print("\n--- STEP 5: Inspect catalogues ---")
 
     print("\n[Mao 2017 voids]")
-    if os.path.exists(voids_path):
-        try:
-            df_voids = pd.read_csv(voids_path, sep=r"\s+")
-            print(f"Mao 2017 columns: {list(df_voids.columns)}")
-            print(f"Total rows: {len(df_voids)}")
-            print(f"First 3 rows:")
-            print(df_voids.head(3).to_string())
-        except Exception as e:
-            print(f"  Parse error: {e}")
-            print("  Trying fixed-width format...")
-            try:
-                with open(voids_path) as f:
-                    first_lines = [f.readline() for _ in range(5)]
-                print("  Raw first 5 lines:")
-                for line in first_lines:
-                    print(f"    {line.rstrip()}")
-            except Exception as e2:
-                print(f"  Raw read also failed: {e2}")
+    if os.path.exists(MAO_VOIDS_PATH):
+        col_names = [
+            "Sample", "ID", "RAdeg", "DEdeg", "z", "NGal",
+            "V", "Reff", "nmin", "delmin", "r", "Prob", "Dbound",
+        ]
+        df_voids = pd.read_fwf(
+            MAO_VOIDS_PATH,
+            colspecs=[
+                (0, 11), (12, 17), (18, 25), (26, 32), (33, 38),
+                (39, 45), (46, 55), (56, 63), (64, 73), (74, 80),
+                (81, 86), (87, 96), (97, 104),
+            ],
+            names=col_names,
+        )
+        print(f"Mao 2017 columns: {list(df_voids.columns)}")
+        print(f"Total rows: {len(df_voids)}")
+        print(f"First 3 rows:")
+        print(df_voids.head(3).to_string())
     else:
         print("  File not found — download failed.")
 
     print("\n[redMaPPer DR8]")
-    if rm_path and os.path.exists(rm_path):
-        try:
-            hdulist = fits.open(rm_path)
-            cols = hdulist[1].columns.names
-            n_clusters = len(hdulist[1].data)
-            print(f"redMaPPer columns: {cols}")
-            print(f"Total clusters: {n_clusters}")
-            df_rm = pd.DataFrame({c: hdulist[1].data[c] for c in cols[:10]})
-            print(f"First 3 rows (first 10 columns):")
-            print(df_rm.head(3).to_string())
-            hdulist.close()
-        except Exception as e:
-            print(f"  Parse error: {e}")
+    if os.path.exists(REDMAPPER_PATH):
+        df_rm = pd.read_csv(REDMAPPER_PATH, sep="\t", comment="#", low_memory=False)
+        df_rm = df_rm[~df_rm.iloc[:, 0].astype(str).str.match(r"^\s*$|^\s*-+")].reset_index(drop=True)
+        df_rm = df_rm.iloc[1:].reset_index(drop=True)
+        print(f"redMaPPer columns (key): {list(df_rm.columns[:15])}")
+        print(f"Total clusters: {len(df_rm)}")
+        print(f"First 3 rows (key columns):")
+        key_cols = ["ID", "RAJ2000", "DEJ2000", "zlambda", "lambda"]
+        print(df_rm[key_cols].head(3).to_string())
     else:
         print("  File not found — download failed.")
 
