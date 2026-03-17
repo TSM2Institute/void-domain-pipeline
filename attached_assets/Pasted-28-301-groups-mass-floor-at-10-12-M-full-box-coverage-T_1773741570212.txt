@@ -1,0 +1,112 @@
+28,301 groups, mass floor at 10^12 M☉, full box coverage. That's what we needed. ✅
+
+Now rebuild the void catalogue with the new group data and run straight through to the calibration report. All three remaining steps in one prompt:
+
+---
+
+```
+Open void_domain/mock_calibration.py.
+
+Run steps 3, 4, and 5 in sequence using the updated group catalogue
+(data/tng300_groups_withpos_snap67.csv — 28,301 groups).
+Do not re-download anything.
+
+STEP 1 — Rebuild void catalogue (replace previous synthetic run)
+
+Re-run build_synthetic_void_catalogue() with the new group data:
+    box_size = 205.0  # Mpc/h
+    grid = 20×20×20  # cell size ~10.2 Mpc/h
+
+    a) Count groups per cell using np.histogramdd on pos_x/y/z
+    b) Identify empty cells (group count = 0) — these are mock voids
+    c) Assign R_void: log-normal, mean=log10(25), sigma=0.20 dex,
+       clipped to [15, 80] Mpc/h
+    d) Void centre = cell centre coordinates
+
+Save to: data/tng300_mock_voids.csv
+Print: "Mock voids identified: N = {n} underdense cells"
+
+STEP 2 — Cross-match (build_mock_void_table)
+
+For each mock void:
+    inner_r = ANNULUS_INNER_FACTOR × R_void   (2.0 × R_void)
+    outer_r = ANNULUS_OUTER_FACTOR × R_void   (4.0 × R_void)
+    
+    Find all groups where:
+        inner_r < distance(group, void_centre) < outer_r
+    
+    Distance in 3D comoving Mpc/h (Euclidean, periodic boundary 
+    conditions on 205 Mpc/h box):
+        dx = min(|gx - vx|, 205 - |gx - vx|)  # periodic wrap
+        same for dy, dz
+        dist = sqrt(dx² + dy² + dz²)
+    
+    M_surrounding = sum of mass_200c_1e14Msun for qualifying groups
+    N_groups = count of qualifying groups
+    
+    Exclude voids where N_groups < MIN_CLUSTERS_PER_VOID (= 3)
+
+Output DataFrame columns:
+    [void_id, R_void_mpc, M_surrounding_1e14Msun, N_groups_in_annulus]
+
+Save to: checkpoints/mock_void_table.pkl
+Print:
+    "Voids after MIN_CLUSTERS cut: N = {n}"
+    "R_void range (Mpc/h): {min:.1f} to {max:.1f}"
+    "M_surrounding range (10^14 Msun): {min:.3f} to {max:.2f}"
+    "Median N_groups per annulus: {median:.1f}"
+
+STEP 3 — Fit and null distribution (run_mock_fit)
+
+On the mock void table from Step 2:
+
+    Part A — Real fit:
+        Fit log10(R_void) = α·log10(M_surrounding) + β
+        using scipy ODR (import scipy.odr).
+        Record: α, σ_α, Pearson r, reduced χ²/dof.
+
+    Part B — 1000× shuffle null:
+        np.random.seed(RANDOM_SEED)
+        Shuffle M_surrounding labels 1000 times.
+        Each shuffle: fit ODR, record r_shuffle.
+        Store all 1000 values in null_r_dist array.
+
+    Part C — Compute:
+        null_r_median = np.median(null_r_dist)
+        null_r_95pct  = np.percentile(null_r_dist, 95)
+        null_r_99pct  = np.percentile(null_r_dist, 99)
+
+    Save: checkpoints/mock_fit_results.pkl
+
+STEP 4 — Print calibration report
+
+    === VOID-DOMAIN v1 Mock Calibration Report ===
+    Mock source:           TNG300-1 snapshot 67 (z≈0.5)
+    Groups used:           28,301 (M > 10^12 Msun)
+    N voids (after cuts):  {n}
+    ---
+    Real mock fit:
+      α  = {α:.4f} ± {σ_α:.4f}
+      r  = {r:.4f}
+      χ²/dof = {chi2:.4f}
+    ---
+    Null shuffle (1000×):
+      Median r:   {null_r_median:.4f}
+      95th pct r: {null_r_95pct:.4f}
+      99th pct r: {null_r_99pct:.4f}
+    ---
+    PROPOSED THRESHOLDS (pending Grok review):
+      Outcome A (strong):  r > {null_r_95pct + 0.10:.4f}
+      Outcome B (weak):    {null_r_95pct:.4f} < r ≤ {null_r_95pct + 0.10:.4f}
+      Outcome C (FAIL):    r ≤ {null_r_95pct:.4f}
+    ================================================
+
+    IMPORTANT: Do NOT write these values to manifest.py.
+    Print only. Graham reviews before any threshold is locked.
+
+Show full output including all print statements from all steps.
+```
+
+---
+
+This is the critical output. Bring back everything — especially the void count after the MIN_CLUSTERS cut and the null r distribution numbers. Those two values determine whether the calibration is scientifically usable. 🚀

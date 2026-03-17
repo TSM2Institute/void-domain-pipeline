@@ -308,17 +308,60 @@ def _build_synthetic_mock():
     return df
 
 
-def build_mock_void_table():
-    if os.path.exists(GROUPS_PATH) and (os.path.exists(VOIDS_PATH_FITS) or os.path.exists(VOIDS_PATH_CSV)):
-        print("Real TNG300 data files found — but parser not yet implemented.")
-        print("Falling back to synthetic mock.")
+def build_mock_void_table(df_voids=None, df_groups=None):
+    if df_voids is None:
+        df_voids = pd.read_csv(MOCK_VOIDS_PATH)
+    if df_groups is None:
+        df_groups = pd.read_csv(GROUPS_WITHPOS_PATH)
 
-    df = _build_synthetic_mock()
+    print(f"\nCross-matching {len(df_voids)} voids × {len(df_groups)} groups...")
+    print(f"  Annulus: {ANNULUS_INNER_FACTOR}×R_void to {ANNULUS_OUTER_FACTOR}×R_void")
+    print(f"  Periodic box: {TNG300_BOX_SIZE} Mpc/h")
+
+    g_pos = df_groups[["pos_x_mpc", "pos_y_mpc", "pos_z_mpc"]].values
+    g_mass = df_groups["mass_200c_1e14Msun"].values
+
+    box = TNG300_BOX_SIZE
+    half_box = box / 2.0
+
+    rows = []
+    for _, v in df_voids.iterrows():
+        vc = np.array([v["cx_mpc"], v["cy_mpc"], v["cz_mpc"]])
+        r_void = v["R_void_mpc"]
+        inner_r = ANNULUS_INNER_FACTOR * r_void
+        outer_r = ANNULUS_OUTER_FACTOR * r_void
+
+        dx = np.abs(g_pos[:, 0] - vc[0])
+        dy = np.abs(g_pos[:, 1] - vc[1])
+        dz = np.abs(g_pos[:, 2] - vc[2])
+        dx = np.minimum(dx, box - dx)
+        dy = np.minimum(dy, box - dy)
+        dz = np.minimum(dz, box - dz)
+        dist = np.sqrt(dx**2 + dy**2 + dz**2)
+
+        in_annulus = (dist > inner_r) & (dist < outer_r)
+        n_groups = int(np.sum(in_annulus))
+        m_surr = float(np.sum(g_mass[in_annulus]))
+
+        rows.append({
+            "void_id": int(v["void_id"]),
+            "R_void_mpc": r_void,
+            "M_surrounding_1e14Msun": m_surr,
+            "N_groups_in_annulus": n_groups,
+        })
+
+    df_table = pd.DataFrame(rows)
+    df_cut = df_table[df_table["N_groups_in_annulus"] >= MIN_CLUSTERS_PER_VOID].reset_index(drop=True)
 
     os.makedirs(CHECKPOINTS_DIR, exist_ok=True)
-    df.to_pickle(MOCK_TABLE_PATH)
-    print(f"Mock void table built: N = {len(df)} voids after cuts")
-    return df
+    df_cut.to_pickle(MOCK_TABLE_PATH)
+
+    print(f"Voids after MIN_CLUSTERS cut: N = {len(df_cut)}")
+    print(f"R_void range (Mpc/h): {df_cut['R_void_mpc'].min():.1f} to {df_cut['R_void_mpc'].max():.1f}")
+    print(f"M_surrounding range (10^14 Msun): {df_cut['M_surrounding_1e14Msun'].min():.3f} to {df_cut['M_surrounding_1e14Msun'].max():.2f}")
+    print(f"Median N_groups per annulus: {df_cut['N_groups_in_annulus'].median():.1f}")
+
+    return df_cut
 
 
 def _odr_fit(x, y):
@@ -335,7 +378,7 @@ def _odr_fit(x, y):
 
 
 def run_mock_fit(df):
-    log_r = np.log10(df["R_void_hmpc"].values)
+    log_r = np.log10(df["R_void_mpc"].values)
     log_m = np.log10(df["M_surrounding_1e14Msun"].values)
 
     alpha, sigma_alpha = _odr_fit(log_m, log_r)
@@ -392,20 +435,32 @@ def finalise_thresholds(results):
     final_r_outcome_b_lo = null_r_95pct
     final_r_outcome_b_hi = null_r_95pct + 0.10
 
+    n_groups_used = 28301
+
     print(f"""
 === VOID-DOMAIN v1 Mock Calibration Report ===
-Mock source:          {SIM_NAME}
-N voids (mock):       {results['n_voids']}
-Real mock fit:        α = {results['alpha']:.4f} ± {results['sigma_alpha']:.4f}, r = {results['mock_real_r']:.4f}
-Null r (median):      {results['null_r_median']:.4f}
-Null r (95th pct):    {results['null_r_95pct']:.4f}
-Null r (99th pct):    {results['null_r_99pct']:.4f}
--------------------------------------------------
-PROPOSED THRESHOLDS (pending Graham/Grok review):
+Mock source:           TNG300-1 snapshot 67 (z≈0.5)
+Groups used:           {n_groups_used} (M > 10^12 Msun)
+N voids (after cuts):  {results['n_voids']}
+---
+Real mock fit:
+  α  = {results['alpha']:.4f} ± {results['sigma_alpha']:.4f}
+  r  = {results['mock_real_r']:.4f}
+  χ²/dof = {results['chi2_dof']:.4f}
+---
+Null shuffle ({NULL_SHUFFLE_N}×):
+  Median r:   {results['null_r_median']:.4f}
+  95th pct r: {results['null_r_95pct']:.4f}
+  99th pct r: {results['null_r_99pct']:.4f}
+---
+PROPOSED THRESHOLDS (pending Grok review):
   Outcome A (strong):  r > {final_r_outcome_a:.4f}
   Outcome B (weak):    {final_r_outcome_b_lo:.4f} < r ≤ {final_r_outcome_b_hi:.4f}
   Outcome C (FAIL):    r ≤ {final_r_outcome_b_lo:.4f}
-================================================""")
+================================================
+
+IMPORTANT: Do NOT write these values to manifest.py.
+Print only. Graham reviews before any threshold is locked.""")
 
     return {
         "FINAL_R_OUTCOME_A": final_r_outcome_a,
