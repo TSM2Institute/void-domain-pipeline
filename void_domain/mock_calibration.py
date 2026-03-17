@@ -31,6 +31,8 @@ GROUPS_WITHPOS_PATH = os.path.join(DATA_DIR, "tng300_groups_withpos_snap67.csv")
 GROUPCAT_HDF5_PATH = os.path.join(DATA_DIR, "tng300_groupcat_snap67.hdf5")
 POSITIONS_CHECKPOINT = os.path.join(CHECKPOINTS_DIR, "tng300_positions_downloaded.pkl")
 MOCK_VOIDS_PATH = os.path.join(DATA_DIR, "tng300_mock_voids.csv")
+POPCORN_VOIDS_PATH = os.path.join(DATA_DIR, "popcorn_voids.dat")
+POPCORN_PARSED_PATH = os.path.join(DATA_DIR, "popcorn_voids_parsed.csv")
 VOIDS_PATH_FITS = os.path.join(DATA_DIR, "tng300_voids.fits")
 VOIDS_PATH_CSV = os.path.join(DATA_DIR, "tng300_voids.csv")
 MOCK_TABLE_PATH = os.path.join(CHECKPOINTS_DIR, "mock_void_table.pkl")
@@ -44,6 +46,87 @@ def _get_api_key():
     if not api_key:
         raise EnvironmentError("TNG_API secret not found in environment.")
     return api_key
+
+
+def parse_popcorn_voids(path=None):
+    if path is None:
+        path = POPCORN_VOIDS_PATH
+
+    with open(path) as f:
+        lines = f.readlines()
+
+    i = 0
+    total_voids = int(lines[i].strip())
+    i += 1
+
+    voids = []
+    while i < len(lines):
+        parts = lines[i].strip().split()
+        if len(parts) == 5:
+            void_id = int(parts[0])
+            n_members = int(parts[1])
+            i += 1
+
+            members = []
+            for _ in range(n_members):
+                mparts = lines[i].strip().split()
+                members.append({
+                    "x": float(mparts[0]),
+                    "y": float(mparts[1]),
+                    "z": float(mparts[2]),
+                    "r": float(mparts[3]),
+                    "mass": float(mparts[4]),
+                    "mtype": int(mparts[5]),
+                })
+                i += 1
+
+            while i < len(lines) and len(lines[i].strip().split()) == 1:
+                i += 1
+
+            seed = [m for m in members if m["mtype"] == 0]
+            if seed:
+                cx = seed[0]["x"] / 1000.0
+                cy = seed[0]["y"] / 1000.0
+                cz = seed[0]["z"] / 1000.0
+            else:
+                cx = members[0]["x"] / 1000.0
+                cy = members[0]["y"] / 1000.0
+                cz = members[0]["z"] / 1000.0
+
+            total_vol = sum((4.0 / 3.0) * np.pi * (m["r"] ** 3) for m in members)
+            r_eff_ckpc = (3.0 * total_vol / (4.0 * np.pi)) ** (1.0 / 3.0)
+            r_eff_mpc = r_eff_ckpc / 1000.0
+
+            voids.append({
+                "void_id": void_id,
+                "cx_mpc": cx,
+                "cy_mpc": cy,
+                "cz_mpc": cz,
+                "R_void_mpc": r_eff_mpc,
+                "n_members": n_members,
+            })
+        else:
+            i += 1
+
+    df = pd.DataFrame(voids)
+
+    print(f"Voids parsed: {len(df)}")
+
+    box_vol = TNG300_BOX_SIZE ** 3
+    max_annulus_vol = 0.5 * box_vol
+
+    def annulus_vol(r):
+        return (4.0 / 3.0) * np.pi * ((ANNULUS_OUTER_FACTOR * r) ** 3 - (ANNULUS_INNER_FACTOR * r) ** 3)
+
+    df["annulus_vol"] = df["R_void_mpc"].apply(annulus_vol)
+    df_cut = df[df["annulus_vol"] < max_annulus_vol].drop(columns=["annulus_vol"]).reset_index(drop=True)
+
+    print(f"Voids after volume-fraction cut: {len(df_cut)}")
+    print(f"R_void range (Mpc/h): {df_cut['R_void_mpc'].min():.1f} to {df_cut['R_void_mpc'].max():.1f}")
+    print(f"Median R_void (Mpc/h): {df_cut['R_void_mpc'].median():.1f}")
+
+    df_cut.to_csv(POPCORN_PARSED_PATH, index=False)
+    return df_cut
 
 
 def download_tng300_data():
@@ -359,6 +442,7 @@ def build_mock_void_table(df_voids=None, df_groups=None):
     print(f"Voids after MIN_CLUSTERS cut: N = {len(df_cut)}")
     print(f"R_void range (Mpc/h): {df_cut['R_void_mpc'].min():.1f} to {df_cut['R_void_mpc'].max():.1f}")
     print(f"M_surrounding range (10^14 Msun): {df_cut['M_surrounding_1e14Msun'].min():.3f} to {df_cut['M_surrounding_1e14Msun'].max():.2f}")
+    print(f"Median M_surrounding (10^14 Msun): {df_cut['M_surrounding_1e14Msun'].median():.3f}")
     print(f"Median N_groups per annulus: {df_cut['N_groups_in_annulus'].median():.1f}")
 
     return df_cut
@@ -428,7 +512,7 @@ def run_mock_fit(df):
     return results
 
 
-def finalise_thresholds(results):
+def finalise_thresholds(results, n_voids_total=474, n_voids_after_volcut=None):
     null_r_95pct = results["null_r_95pct"]
 
     final_r_outcome_a = null_r_95pct + 0.10
@@ -436,12 +520,17 @@ def finalise_thresholds(results):
     final_r_outcome_b_hi = null_r_95pct + 0.10
 
     n_groups_used = 28301
+    if n_voids_after_volcut is None:
+        n_voids_after_volcut = n_voids_total
 
     print(f"""
 === VOID-DOMAIN v1 Mock Calibration Report ===
-Mock source:           TNG300-1 snapshot 67 (z≈0.5)
-Groups used:           {n_groups_used} (M > 10^12 Msun)
+Mock source:           Popcorn TNG300 voids (Rodriguez-Medrano 2024)
+Groups used:           {n_groups_used} (M > 10^12 Msun, snapshot 67 z≈0.5)
+Void catalogue:        {n_voids_total} total, {n_voids_after_volcut} after volume-fraction cut
 N voids (after cuts):  {results['n_voids']}
+Snapshot note:         Void catalogue z=0, group catalogue z=0.5
+                       (acceptable for null calibration only)
 ---
 Real mock fit:
   α  = {results['alpha']:.4f} ± {results['sigma_alpha']:.4f}

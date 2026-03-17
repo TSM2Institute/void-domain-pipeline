@@ -1,0 +1,107 @@
+Open void_domain/mock_calibration.py.
+
+Parse the Popcorn void catalogue and run the full cross-match + fit.
+The group catalogue is already in memory from 
+data/tng300_groups_withpos_snap67.csv.
+
+STEP 1 — Parse popcorn_voids.dat into a void table
+
+The file is a structured block format. Parse it as follows:
+
+For each void block:
+  - Header line has 5 fields: void_id n_members max_mass n_fof n_flag
+  - Member lines have 6 fields: x y z radius mass member_type
+  - FoF ID lines have 1 field
+
+Extract for each void:
+  void_id    = header field 0
+  n_members  = header field 1
+  
+  Void centre: take the type=0 (seed) member x, y, z
+               Convert ckpc/h → Mpc/h by dividing by 1000
+  
+  R_void: compute effective radius from ALL member spheres combined.
+    Total volume V = sum of (4/3 * pi * r_i^3) for all members
+    R_eff = (3V / 4pi)^(1/3)
+    Convert ckpc/h → Mpc/h by dividing by 1000
+
+Build DataFrame: [void_id, cx_mpc, cy_mpc, cz_mpc, R_void_mpc, n_members]
+
+Apply volume-fraction cut (Manifest v1.2):
+  Exclude voids where annulus volume > 50% of box volume.
+  Box volume = 205^3 = 8,615,125 Mpc^3
+  Annulus volume = (4/3)*pi*(4*R)^3 - (4/3)*pi*(2*R)^3
+  Keep voids where annulus volume < 4,307,562 Mpc^3
+  This gives R_void < ~35 Mpc/h approximately.
+
+Print:
+  "Voids parsed: {n_total}"
+  "Voids after volume-fraction cut: {n_cut}"
+  "R_void range (Mpc/h): {min:.1f} to {max:.1f}"
+  "Median R_void (Mpc/h): {median:.1f}"
+
+STEP 2 — Cross-match with group catalogue
+
+Load data/tng300_groups_withpos_snap67.csv (28,301 groups).
+Box size = 205.0 Mpc/h (periodic).
+
+For each void:
+  inner_r = 2.0 × R_void
+  outer_r = 4.0 × R_void
+
+  For each group, compute periodic 3D distance:
+    dx = min(|gx - cx|, 205 - |gx - cx|)
+    dy = min(|gy - cy|, 205 - |gy - cy|)
+    dz = min(|gz - cz|, 205 - |gz - cz|)
+    dist = sqrt(dx² + dy² + dz²)
+
+  M_surrounding = sum of mass_200c_1e14Msun for groups where
+                  inner_r < dist < outer_r
+
+  N_groups_in_annulus = count of qualifying groups
+
+Exclude voids where N_groups_in_annulus < MIN_CLUSTERS_PER_VOID (=3)
+
+Output DataFrame: [void_id, R_void_mpc, M_surrounding_1e14Msun, 
+                   N_groups_in_annulus]
+
+Save to: checkpoints/mock_void_table.pkl
+
+Print:
+  "Voids after MIN_CLUSTERS cut: N = {n}"
+  "R_void range (Mpc/h): {min:.1f} to {max:.1f}"
+  "M_surrounding range (10^14 Msun): {min:.3f} to {max:.2f}"
+  "Median M_surrounding (10^14 Msun): {median:.3f}"
+  "Median N_groups per annulus: {median_n:.1f}"
+
+STEP 3 — Fit + 1000x null + calibration report
+
+Run run_mock_fit() and finalise_thresholds() exactly as before.
+
+Print the full calibration report:
+  === VOID-DOMAIN v1 Mock Calibration Report ===
+  Mock source:           Popcorn TNG300 voids (Rodriguez-Medrano 2024)
+  Groups used:           28,301 (M > 10^12 Msun, snapshot 67 z≈0.5)
+  Void catalogue:        474 total, {n_after_cut} after volume-fraction cut
+  N voids (after cuts):  {n_final}
+  Snapshot note:         Void catalogue z=0, group catalogue z=0.5
+                         (acceptable for null calibration only)
+  ---
+  Real mock fit:
+    α  = {α:.4f} ± {σ_α:.4f}
+    r  = {r:.4f}
+    χ²/dof = {chi2:.4f}
+  ---
+  Null shuffle (1000×):
+    Median r:   {null_r_median:.4f}
+    95th pct r: {null_r_95pct:.4f}
+    99th pct r: {null_r_99pct:.4f}
+  ---
+  PROPOSED THRESHOLDS (pending Grok review):
+    Outcome A (strong):  r > {null_r_95pct + 0.10:.4f}
+    Outcome B (weak):    {null_r_95pct:.4f} < r ≤ {null_r_95pct + 0.10:.4f}
+    Outcome C (FAIL):    r ≤ {null_r_95pct:.4f}
+  ================================================
+
+IMPORTANT: Do NOT write anything to manifest.py. Print only.
+Show complete output from all three steps.
