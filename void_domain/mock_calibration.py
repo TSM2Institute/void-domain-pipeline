@@ -1,5 +1,6 @@
 import os
 import pickle
+import time
 import numpy as np
 import pandas as pd
 import requests
@@ -22,7 +23,7 @@ from void_domain.manifest import (
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
 CHECKPOINTS_DIR = os.path.join(os.path.dirname(__file__), "checkpoints")
 
-GROUPS_PATH = os.path.join(DATA_DIR, "tng300_groups_snap67.hdf5")
+GROUPS_PATH = os.path.join(DATA_DIR, "tng300_groups_snap67.csv")
 GROUPS_CHECKPOINT = os.path.join(CHECKPOINTS_DIR, "tng300_groups_downloaded.pkl")
 VOIDS_PATH_FITS = os.path.join(DATA_DIR, "tng300_voids.fits")
 VOIDS_PATH_CSV = os.path.join(DATA_DIR, "tng300_voids.csv")
@@ -45,38 +46,52 @@ def download_tng300_data():
     headers = {"api-key": api_key}
 
     groups_ok = False
-    groups_url = "https://www.tng-project.org/api/TNG300-1/files/groupcat-67/?format=api"
-    print(f"[1/2] Attempting TNG300-1 group catalogue download...")
-    print(f"      URL: {groups_url}")
+    initial_url = (
+        "https://www.tng-project.org/api/TNG300-1/snapshots/67/subhalos/"
+        "?limit=1000&primary_flag=1&mass__gt=1e3"
+    )
+    print("[1/2] Downloading TNG300-1 FoF group catalogue (snapshot 67)...")
+    print(f"      Endpoint: subhalos/?primary_flag=1&mass__gt=1e3")
+    print(f"      (primary subhalo of each FoF group, M > 10^13 M☉ — cluster scale)")
     try:
-        resp = requests.get(groups_url, headers=headers, timeout=30)
-        if resp.status_code == 200:
-            print(f"      Authentication OK — status {resp.status_code}")
-            file_meta = resp.json()
-            if isinstance(file_meta, dict) and "url" in file_meta:
-                print(f"      Downloading HDF5 to {GROUPS_PATH}...")
-                dl_resp = requests.get(file_meta["url"], headers=headers, stream=True, timeout=120)
-                dl_resp.raise_for_status()
-                downloaded = 0
-                with open(GROUPS_PATH, "wb") as f:
-                    for chunk in dl_resp.iter_content(chunk_size=1024 * 1024):
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        mb = downloaded / (1024 * 1024)
-                        if int(mb) % 100 == 0 and int(mb) > 0:
-                            print(f"      Downloaded {int(mb)} MB...")
-                print(f"      Download complete: {downloaded / (1024*1024):.1f} MB")
-                groups_ok = True
-                with open(GROUPS_CHECKPOINT, "wb") as f:
-                    pickle.dump(True, f)
-            else:
-                print(f"      API responded but no direct file URL found.")
-                print(f"      Response sample: {str(file_meta)[:200]}")
-        else:
-            print(f"      Request failed — status {resp.status_code}: {resp.text[:200]}")
-    except (requests.RequestException, OSError) as e:
+        records = []
+        url = initial_url
+        page = 0
+        while url:
+            resp = requests.get(url, headers=headers, timeout=60)
+            resp.raise_for_status()
+            data = resp.json()
+            results = data.get("results", [])
+            records.extend(results)
+            page += 1
+            print(f"  Downloaded {len(records)} groups so far... (page {page})")
+            url = data.get("next")
+            if url:
+                time.sleep(0.1)
+
+        rows = []
+        for halo in records:
+            pos = halo.get("pos")
+            rows.append({
+                "group_id": halo["id"],
+                "mass_log_msun": halo["mass_log_msun"],
+                "mass_200c_1e14Msun": 10.0 ** halo["mass_log_msun"] / 1e14,
+                "pos_x": pos[0] if pos else None,
+                "pos_y": pos[1] if pos else None,
+                "pos_z": pos[2] if pos else None,
+            })
+
+        df_groups = pd.DataFrame(rows)
+        df_groups.to_csv(GROUPS_PATH, index=False)
+        with open(GROUPS_CHECKPOINT, "wb") as f:
+            pickle.dump(True, f)
+        groups_ok = True
+        print(f"Group catalogue saved: N = {len(df_groups)} groups")
+
+    except (requests.RequestException, OSError, KeyError) as e:
         print(f"      Download failed: {e}")
         print("      Proceeding to fallback.")
+        df_groups = None
 
     voids_ok = False
     primary_url = "https://catalogs.iate.conicet.unc.edu.ar"
@@ -91,6 +106,19 @@ def download_tng300_data():
         print("      VOID CATALOGUE NOT FOUND — switching to synthetic mock")
 
     return groups_ok, voids_ok
+
+
+def verify_groups_download():
+    if not os.path.exists(GROUPS_PATH):
+        print("No group catalogue file found.")
+        return
+    df = pd.read_csv(GROUPS_PATH)
+    has_pos = not df["pos_x"].isna().all()
+    print(f"\nTotal groups downloaded: {len(df)}")
+    print(f"Mass range (log10 M/M☉): {df['mass_log_msun'].min():.2f} to {df['mass_log_msun'].max():.2f}")
+    print(f"Position columns present: {has_pos}")
+    print(f"\nFirst 3 rows:")
+    print(df.head(3).to_string(index=False))
 
 
 def test_tng_auth():
