@@ -1,0 +1,125 @@
+Create void_domain/real_data_pipeline.py
+
+This module runs the real-data cross-match and density contrast 
+calculation. All parameters from void_domain/manifest.py.
+Do NOT run the fit or null test yet — cross-match and δ only.
+
+STEP 1 — Load and filter both catalogues
+
+Voids (data/mao2017_boss_voids.dat):
+    Columns: Sample, ID, RAdeg, DEdeg, z, NGal, V, Reff, nmin,
+             delmin, r, Prob, Dbound
+    Apply redshift cut: 0.2 < z < 0.7
+    Keep all 4 survey regions (CMASS North/South, LOWZ North/South)
+    Print: "Voids after redshift cut: N = {n}"
+
+Clusters (data/redmapper_dr8_vizier.dat):
+    Columns include: RAJ2000, DEJ2000, zlambda, lambda
+    Apply redshift cut: 0.1 < zlambda < 0.6
+    Apply minimum richness cut: lambda >= 20
+      (removes poorly constrained low-mass systems)
+    Print: "Clusters after cuts: N = {n}"
+
+STEP 2 — Convert to comoving Cartesian coordinates
+
+Use astropy.cosmology FlatLambdaCDM(H0=70, Om0=0.3) for all
+comoving distance calculations.
+
+For voids:
+    d_c = cosmo.comoving_distance(z).value  # Mpc
+    x = d_c * cos(Dec_rad) * cos(RA_rad)
+    y = d_c * cos(Dec_rad) * sin(RA_rad)
+    z_cart = d_c * sin(Dec_rad)
+
+For clusters: same conversion using zlambda.
+
+Store as numpy arrays for fast distance calculation.
+
+STEP 3 — Convert lambda to M200c
+
+Use Simet et al. (2017) mass-richness relation:
+    log10(M200c) = 14.344 + 1.33 * log10(lambda / 40)
+    M200c in units of h^-1 M_sun
+
+Convert to 10^14 M_sun / h:
+    mass_1e14 = 10^(log10_M200c) / 1e14
+
+Print: "Mass range (10^14 Msun/h): {min:.3f} to {max:.2f}"
+
+STEP 4 — Compute redshift-binned mean density (Grok CP2 requirement)
+
+Per Grok CP2 sign-off: ⟨ρ⟩ must be computed from redMaPPer 
+itself in redshift bins, not a global average.
+
+Create 5 redshift bins: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
+
+For each bin:
+    Select clusters in bin
+    Compute comoving volume of spherical shell:
+        V_shell = (4π/3) × (d_c_max³ - d_c_min³)  [Mpc³]
+        (use sky fraction: BOSS covers ~10,000 deg² = 0.2424 of sky)
+        V_eff = 0.2424 × V_shell
+    rho_bin = sum(mass_1e14 for clusters in bin) / V_eff
+
+Store as lookup table: {z_mid: rho_bin}
+Print: "Redshift-binned mean densities (10^14 Msun/Mpc^3):"
+For each bin print: "  z={z_mid:.2f}: rho={rho:.6f}"
+
+STEP 5 — Cross-match: for each void find clusters in 2-4×Reff annulus
+
+For each void i:
+    R_void = Reff (already in Mpc/h from catalogue)
+    inner_r = 2.0 × R_void
+    outer_r = 4.0 × R_void
+    
+    Compute 3D comoving distance to all clusters:
+        dist = sqrt((cx-vx)² + (cy-vy)² + (cz-vz)²)
+    
+    Select clusters where inner_r < dist < outer_r
+    
+    M_annulus = sum of mass_1e14 for selected clusters
+    N_in_annulus = count of selected clusters
+    
+    V_annulus = (4π/3) × (outer_r³ - inner_r³)
+              = (4π/3) × 56 × R_void³
+    
+    rho_annulus = M_annulus / V_annulus
+    
+    Get rho_mean for this void's redshift bin (nearest bin centre)
+    
+    delta = (rho_annulus - rho_mean) / rho_mean
+
+Exclude voids where N_in_annulus < 3 (MIN_CLUSTERS_PER_VOID)
+
+Build results DataFrame:
+    [void_id, sample, RA, Dec, z_void, R_void_mpc,
+     M_annulus_1e14, N_in_annulus, V_annulus_mpc3,
+     rho_annulus, rho_mean_bin, delta]
+
+Save to: checkpoints/real_void_table.pkl
+Save CSV: outputs/real_void_table.csv
+
+STEP 6 — Print inspection report (NO fit, NO outcome labels)
+
+    === VOID-DOMAIN v1 Real Data Cross-Match Report ===
+    Void catalogue:    Mao et al. (2017) BOSS DR12
+    Cluster catalogue: redMaPPer DR8 (Rykoff et al. 2014)
+    Redshift note:     Clusters only to z=0.55; voids to z=0.70
+    ---
+    Voids after z cut:      {n_voids}
+    Clusters after cuts:    {n_clusters}
+    Voids after MIN_CLUSTERS cut: {n_final}
+    Voids lost (z>0.55):    {n_lost} (estimated)
+    ---
+    R_void range (Mpc/h):      {min:.1f} to {max:.1f}
+    delta range:               {min:.4f} to {max:.4f}
+    Median delta:              {median:.4f}
+    Negative delta voids:      {n_neg} / {n_final}
+    Median N_clusters/annulus: {median_n:.1f}
+    ---
+    RAW DATA ONLY — fit and outcome pending Grok CP3 review
+    ====================================================
+
+IMPORTANT: Save outputs/real_void_table.csv but do NOT compute
+fit, r value, or any outcome label. Graham reviews raw table first.
+Show full output from all steps.
