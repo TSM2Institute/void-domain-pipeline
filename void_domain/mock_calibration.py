@@ -3,6 +3,7 @@ import pickle
 import time
 import numpy as np
 import pandas as pd
+import h5py
 import requests
 from scipy import odr
 from scipy.stats import pearsonr
@@ -25,10 +26,16 @@ CHECKPOINTS_DIR = os.path.join(os.path.dirname(__file__), "checkpoints")
 
 GROUPS_PATH = os.path.join(DATA_DIR, "tng300_groups_snap67.csv")
 GROUPS_CHECKPOINT = os.path.join(CHECKPOINTS_DIR, "tng300_groups_downloaded.pkl")
+GROUPS_WITHPOS_PATH = os.path.join(DATA_DIR, "tng300_groups_withpos_snap67.csv")
+GROUPCAT_HDF5_PATH = os.path.join(DATA_DIR, "tng300_groupcat_snap67.hdf5")
+POSITIONS_CHECKPOINT = os.path.join(CHECKPOINTS_DIR, "tng300_positions_downloaded.pkl")
+MOCK_VOIDS_PATH = os.path.join(DATA_DIR, "tng300_mock_voids.csv")
 VOIDS_PATH_FITS = os.path.join(DATA_DIR, "tng300_voids.fits")
 VOIDS_PATH_CSV = os.path.join(DATA_DIR, "tng300_voids.csv")
 MOCK_TABLE_PATH = os.path.join(CHECKPOINTS_DIR, "mock_void_table.pkl")
 FIT_RESULTS_PATH = os.path.join(CHECKPOINTS_DIR, "mock_fit_results.pkl")
+
+TNG300_BOX_SIZE = 205.0
 
 
 def _get_api_key():
@@ -119,6 +126,134 @@ def verify_groups_download():
     print(f"Position columns present: {has_pos}")
     print(f"\nFirst 3 rows:")
     print(df.head(3).to_string(index=False))
+
+
+def fetch_tng300_positions():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(CHECKPOINTS_DIR, exist_ok=True)
+
+    api_key = _get_api_key()
+    headers = {"api-key": api_key}
+
+    max_chunk = 30
+    mass_threshold = 0.01
+
+    print("Downloading TNG300-1 groupcat HDF5 chunks (positions + masses)...")
+    print(f"  Chunks 0–{max_chunk - 1} (contain all groups with M200c > {mass_threshold} × 10^14 M☉)")
+
+    all_pos = []
+    all_m200 = []
+    all_r200 = []
+    total_downloaded_mb = 0.0
+    group_id_offset = 0
+
+    for i in range(max_chunk):
+        url = f"http://www.tng-project.org/api/TNG300-1/files/groupcat-67.{i}.hdf5"
+        resp = requests.get(url, headers=headers, timeout=120)
+        resp.raise_for_status()
+        chunk_mb = len(resp.content) / (1024 * 1024)
+        total_downloaded_mb += chunk_mb
+
+        tmp_path = os.path.join(DATA_DIR, f"_chunk_{i}.hdf5")
+        with open(tmp_path, "wb") as f:
+            f.write(resp.content)
+
+        with h5py.File(tmp_path, "r") as hf:
+            n_groups = hf["Header"].attrs["Ngroups_ThisFile"]
+            if n_groups > 0:
+                all_pos.append(hf["Group"]["GroupPos"][:])
+                all_m200.append(hf["Group"]["Group_M_Crit200"][:])
+                all_r200.append(hf["Group"]["Group_R_Crit200"][:])
+
+        os.remove(tmp_path)
+
+        if (i + 1) % 10 == 0 or i == max_chunk - 1:
+            n_so_far = sum(len(m) for m in all_m200)
+            print(f"  Chunk {i + 1}/{max_chunk} — {n_so_far} groups, {total_downloaded_mb:.1f} MB downloaded")
+
+        pass
+
+    print(f"  HDF5 download complete: {total_downloaded_mb:.1f} MB total")
+
+    print("\nParsing into DataFrame...")
+    group_pos = np.concatenate(all_pos, axis=0)
+    group_m200 = np.concatenate(all_m200)
+    group_r200 = np.concatenate(all_r200)
+
+    n_total = len(group_m200)
+    print(f"  Raw groups from chunks: {n_total}")
+
+    pos_mpc = group_pos / 1000.0
+    mass_1e14 = group_m200 * 1e-4
+    r200_mpc = group_r200 / 1000.0
+
+    df = pd.DataFrame({
+        "group_id": np.arange(n_total),
+        "pos_x_mpc": pos_mpc[:, 0],
+        "pos_y_mpc": pos_mpc[:, 1],
+        "pos_z_mpc": pos_mpc[:, 2],
+        "mass_200c_1e14Msun": mass_1e14,
+        "r_200c_mpc": r200_mpc,
+    })
+
+    df = df[df["mass_200c_1e14Msun"] > mass_threshold].reset_index(drop=True)
+
+    df.to_csv(GROUPS_WITHPOS_PATH, index=False)
+    with open(POSITIONS_CHECKPOINT, "wb") as f:
+        pickle.dump(True, f)
+
+    print(f"\nGroups with positions: N = {len(df)}")
+    print(f"Mass range (10^14 Msun): {df['mass_200c_1e14Msun'].min():.4f} to {df['mass_200c_1e14Msun'].max():.2f}")
+    print(f"Position range X (Mpc/h): {df['pos_x_mpc'].min():.1f} to {df['pos_x_mpc'].max():.1f}")
+    print(f"\nFirst 3 rows:")
+    print(df.head(3).to_string(index=False))
+
+    return df
+
+
+def build_synthetic_voids(df_groups):
+    rng = np.random.default_rng(RANDOM_SEED)
+
+    box = TNG300_BOX_SIZE
+    n_cells = 20
+    cell_size = box / n_cells
+
+    print(f"\nBuilding synthetic void catalogue from group positions...")
+    print(f"  Box size: {box} Mpc/h, grid: {n_cells}x{n_cells}x{n_cells}, cell size: {cell_size:.1f} Mpc/h")
+
+    positions = df_groups[["pos_x_mpc", "pos_y_mpc", "pos_z_mpc"]].values
+    edges = np.linspace(0, box, n_cells + 1)
+
+    counts, _ = np.histogramdd(
+        positions,
+        bins=[edges, edges, edges],
+    )
+
+    empty_cells = np.argwhere(counts == 0)
+    print(f"  Empty cells (group count = 0): {len(empty_cells)}")
+
+    voids = []
+    for idx, (ix, iy, iz) in enumerate(empty_cells):
+        cx = (ix + 0.5) * cell_size
+        cy = (iy + 0.5) * cell_size
+        cz = (iz + 0.5) * cell_size
+
+        log_r = rng.normal(loc=np.log10(25.0), scale=0.20)
+        r_void = np.clip(10.0 ** log_r, 15.0, 80.0)
+
+        voids.append({
+            "void_id": idx,
+            "cx_mpc": cx,
+            "cy_mpc": cy,
+            "cz_mpc": cz,
+            "R_void_mpc": r_void,
+        })
+
+    df_voids = pd.DataFrame(voids)
+    df_voids.to_csv(MOCK_VOIDS_PATH, index=False)
+
+    print(f"Mock voids identified: N = {len(df_voids)} underdense cells")
+    return df_voids
 
 
 def test_tng_auth():

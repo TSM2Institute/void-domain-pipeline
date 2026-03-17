@@ -1,0 +1,82 @@
+Open void_domain/mock_calibration.py.
+
+We need group positions. Add a new function fetch_tng300_positions()
+that downloads a field-specific HDF5 file from the TNG API.
+
+STEP 1 — Download group catalogue HDF5 (positions + masses)
+
+url = (
+    "https://www.tng-project.org/api/TNG300-1/files/groupcat-67/"
+    "?GroupPos&Group_M_Crit200&Group_R_Crit200"
+)
+headers = {"api-key": api_key}
+
+response = requests.get(url, headers=headers, stream=True)
+Save to: data/tng300_groupcat_snap67.hdf5
+
+Print progress every 50 MB: "Downloaded {n} MB..."
+Print on completion: "HDF5 download complete: {filesize:.1f} MB"
+
+STEP 2 — Parse HDF5 into DataFrame
+
+import h5py
+
+Open data/tng300_groupcat_snap67.hdf5 and extract:
+    GroupPos        → shape (N, 3), units: comoving kpc/h
+                      convert to Mpc/h by dividing by 1000
+    Group_M_Crit200 → shape (N,), units: 10^10 M☉/h
+                      convert to 10^14 M☉ by multiplying by 1e10/1e14 = 1e-4
+    Group_R_Crit200 → shape (N,), units: comoving kpc/h
+                      convert to Mpc/h by dividing by 1000
+
+Build DataFrame with columns:
+    [group_id, pos_x_mpc, pos_y_mpc, pos_z_mpc, 
+     mass_200c_1e14Msun, r_200c_mpc]
+
+Apply mass cut: keep only groups where mass_200c_1e14Msun > 0.01
+(removes unresolved halos below ~10^12 M☉)
+
+Save to: data/tng300_groups_withpos_snap67.csv
+Checkpoint: checkpoints/tng300_positions_downloaded.pkl = True
+
+Print:
+    "Groups with positions: N = {n}"
+    "Mass range (10^14 Msun): {min:.4f} to {max:.2f}"
+    "Position range X (Mpc/h): {min:.1f} to {max:.1f}"
+    "First 3 rows: {df.head(3)}"
+
+STEP 3 — Build synthetic void catalogue from group positions
+
+We have no external void catalogue — build voids directly from the
+TNG300 group distribution using an underdensity grid approach:
+
+    box_size = 205.0  # TNG300-1 box size in Mpc/h (comoving)
+
+    a) Divide box into 20×20×20 grid cells
+       (cell size ~10 Mpc/h, comparable to small voids)
+
+    b) Count groups per cell using np.histogramdd on 
+       [pos_x, pos_y, pos_z] with range [[0,205],[0,205],[0,205]]
+
+    c) Identify void cells: cells where group count = 0
+       (genuine underdensities in the simulation)
+
+    d) For each void cell, assign:
+         void centre = cell centre coordinates (x, y, z) in Mpc/h
+         R_void      = draw from log-normal:
+                       mean = log10(25), sigma = 0.20 dex
+                       clip to [15, 80] Mpc/h
+                       (published TNG300 void size distribution,
+                        Cautun et al. 2018)
+
+    e) Keep only void cells that have at least MIN_CLUSTERS_PER_VOID
+       groups within the 2–4×R_void annulus (will be checked in 
+       build_mock_void_table)
+
+Save void list as: data/tng300_mock_voids.csv
+Columns: [void_id, cx_mpc, cy_mpc, cz_mpc, R_void_mpc]
+
+Print: "Mock voids identified: N = {n} underdense cells"
+
+STEP 4 — Run both functions and show full output.
+Do not run cross-match or fit yet.
