@@ -1,9 +1,8 @@
 import os
 import pickle
-import urllib.request
-import urllib.error
 import numpy as np
 import pandas as pd
+import requests
 from scipy import odr
 from scipy.stats import pearsonr
 
@@ -31,21 +30,51 @@ MOCK_TABLE_PATH = os.path.join(CHECKPOINTS_DIR, "mock_void_table.pkl")
 FIT_RESULTS_PATH = os.path.join(CHECKPOINTS_DIR, "mock_fit_results.pkl")
 
 
+def _get_api_key():
+    api_key = os.environ.get("TNG_API")
+    if not api_key:
+        raise EnvironmentError("TNG_API secret not found in environment.")
+    return api_key
+
+
 def download_tng300_data():
     os.makedirs(DATA_DIR, exist_ok=True)
     os.makedirs(CHECKPOINTS_DIR, exist_ok=True)
 
+    api_key = _get_api_key()
+    headers = {"api-key": api_key}
+
     groups_ok = False
-    groups_url = f"{SIM_URL}groups_067/"
+    groups_url = "https://www.tng-project.org/api/TNG300-1/files/groupcat-67/?format=api"
     print(f"[1/2] Attempting TNG300-1 group catalogue download...")
     print(f"      URL: {groups_url}")
     try:
-        req = urllib.request.Request(groups_url, method="HEAD")
-        req.add_header("User-Agent", "VOID-DOMAIN/1.0")
-        urllib.request.urlopen(req, timeout=15)
-        print("      HEAD request succeeded — but full HDF5 download requires API key.")
-        print("      Proceeding to fallback: synthetic mock will be used.")
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
+        resp = requests.get(groups_url, headers=headers, timeout=30)
+        if resp.status_code == 200:
+            print(f"      Authentication OK — status {resp.status_code}")
+            file_meta = resp.json()
+            if isinstance(file_meta, dict) and "url" in file_meta:
+                print(f"      Downloading HDF5 to {GROUPS_PATH}...")
+                dl_resp = requests.get(file_meta["url"], headers=headers, stream=True, timeout=120)
+                dl_resp.raise_for_status()
+                downloaded = 0
+                with open(GROUPS_PATH, "wb") as f:
+                    for chunk in dl_resp.iter_content(chunk_size=1024 * 1024):
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        mb = downloaded / (1024 * 1024)
+                        if int(mb) % 100 == 0 and int(mb) > 0:
+                            print(f"      Downloaded {int(mb)} MB...")
+                print(f"      Download complete: {downloaded / (1024*1024):.1f} MB")
+                groups_ok = True
+                with open(GROUPS_CHECKPOINT, "wb") as f:
+                    pickle.dump(True, f)
+            else:
+                print(f"      API responded but no direct file URL found.")
+                print(f"      Response sample: {str(file_meta)[:200]}")
+        else:
+            print(f"      Request failed — status {resp.status_code}: {resp.text[:200]}")
+    except (requests.RequestException, OSError) as e:
         print(f"      Download failed: {e}")
         print("      Proceeding to fallback.")
 
@@ -54,16 +83,32 @@ def download_tng300_data():
     print(f"\n[2/2] Attempting TNG300 void catalogue download...")
     print(f"      Primary URL: {primary_url}")
     try:
-        req = urllib.request.Request(primary_url, method="HEAD")
-        req.add_header("User-Agent", "VOID-DOMAIN/1.0")
-        urllib.request.urlopen(req, timeout=15)
-        print("      Catalogue server reachable — but specific TNG300 void file path unknown.")
+        resp = requests.head(primary_url, timeout=15)
+        print(f"      Catalogue server reachable (status {resp.status_code}) — but specific TNG300 void file path unknown.")
         print("      VOID CATALOGUE NOT FOUND — switching to synthetic mock")
-    except (urllib.error.URLError, urllib.error.HTTPError, OSError) as e:
+    except (requests.RequestException, OSError) as e:
         print(f"      Download failed: {e}")
         print("      VOID CATALOGUE NOT FOUND — switching to synthetic mock")
 
     return groups_ok, voids_ok
+
+
+def test_tng_auth():
+    api_key = _get_api_key()
+    headers = {"api-key": api_key}
+    url = "https://www.tng-project.org/api/TNG300-1/snapshots/67/subhalos/?limit=1"
+    print(f"Testing TNG300 API authentication...")
+    print(f"URL: {url}")
+    try:
+        resp = requests.get(url, headers=headers, timeout=30)
+        print(f"TNG300 API authentication: OK — status {resp.status_code}")
+        data = resp.json()
+        if "results" in data and len(data["results"]) > 0:
+            print(f"First record sample: {data['results'][0]}")
+        else:
+            print(f"Response sample: {str(data)[:300]}")
+    except (requests.RequestException, OSError) as e:
+        print(f"Authentication test failed: {e}")
 
 
 def _build_synthetic_mock():
