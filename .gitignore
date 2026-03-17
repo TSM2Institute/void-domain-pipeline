@@ -2,6 +2,20 @@
 void_domain/data/
 void_domain/checkpoints/
 
+# Replit scaffolding — not part of this project
+artifacts/
+attached_assets/
+lib/
+scripts/
+.npmrc
+.replitignore
+replit.md
+package.json
+pnpm-lock.yaml
+pnpm-workspace.yaml
+tsconfig.base.json
+tsconfig.json
+
 # Python cache
 __pycache__/
 *.pyc
