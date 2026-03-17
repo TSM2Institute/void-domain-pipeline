@@ -1,0 +1,105 @@
+Open void_domain/real_data_pipeline.py.
+
+Add a new function: run_real_fit()
+Load checkpoints/real_void_table_cut.pkl (927 voids).
+
+IMPORTANT: Log-log fit requires delta > 0 only.
+Filter: df_pos = df[df['delta'] > 0]
+Print: "Voids with delta > 0 (log-log fit): N = {n}"
+Print: "Voids with delta <= 0 (excluded from log-log): N = {n}"
+
+PART A — Linear fit (all 927 voids)
+    from scipy import stats
+    slope, intercept, r_linear, p_linear, se = stats.linregress(
+        df['delta'].values, df['R_void_mpc'].values)
+    Print:
+        "Linear fit (all voids):"
+        "  slope = {slope:.4f} ± {se:.4f}"
+        "  Pearson r = {r_linear:.4f}"
+        "  p-value = {p_linear:.4e}"
+
+PART B — Log-log fit (delta > 0 voids only)
+    from scipy.odr import ODR, Model, RealData
+    x = np.log10(df_pos['delta'].values)
+    y = np.log10(df_pos['R_void_mpc'].values)
+    # Use ODR
+    def linear_func(B, x): return B[0]*x + B[1]
+    model = Model(linear_func)
+    data = RealData(x, y)
+    odr = ODR(data, model, beta0=[0.0, 1.5])
+    output = odr.run()
+    alpha = output.beta[0]
+    sigma_alpha = output.sd_beta[0]
+    r_loglog = np.corrcoef(x, y)[0,1]
+    residuals = y - (alpha*x + output.beta[1])
+    chi2_dof = np.sum(residuals**2) / (len(x) - 2)
+    Print:
+        "Log-log fit (delta > 0 voids):"
+        "  α = {alpha:.4f} ± {sigma_alpha:.4f}"
+        "  Pearson r = {r_loglog:.4f}"
+        "  reduced χ²/dof = {chi2_dof:.4f}"
+        "  N used = {n}"
+
+PART C — Bootstrap 95% CI on α (log-log, 1000 iterations)
+    np.random.seed(20260315)
+    alpha_boot = []
+    for i in range(1000):
+        idx = np.random.choice(len(df_pos), len(df_pos), replace=True)
+        xb = x[idx]; yb = y[idx]
+        data_b = RealData(xb, yb)
+        odr_b = ODR(data_b, model, beta0=[0.0, 1.5])
+        out_b = odr_b.run()
+        alpha_boot.append(out_b.beta[0])
+    alpha_boot = np.array(alpha_boot)
+    ci_lo = np.percentile(alpha_boot, 2.5)
+    ci_hi = np.percentile(alpha_boot, 97.5)
+    Print:
+        "Bootstrap 95% CI on α: [{ci_lo:.4f}, {ci_hi:.4f}]"
+        "α = 0 inside 95% CI: {True/False}"
+
+PART D — 1000× label shuffle null test (linear r)
+    np.random.seed(20260315)
+    null_r = []
+    delta_vals = df['delta'].values.copy()
+    r_vals = df['R_void_mpc'].values
+    for i in range(1000):
+        np.random.shuffle(delta_vals)
+        _, _, r_s, _, _ = stats.linregress(delta_vals, r_vals)
+        null_r.append(r_s)
+    null_r = np.array(null_r)
+    p_null = np.mean(np.abs(null_r) >= np.abs(r_linear))
+    Print:
+        "Null shuffle p-value: {p_null:.4f}"
+        "Real |r| beats {100*(1-p_null):.1f}% of null shuffles"
+
+PART E — Apply locked decision tree and falsification statement
+
+    Print the locked falsification statement from manifest.py.
+    
+    Then apply:
+    
+    # Primary criterion: α consistent with 0?
+    alpha_zero_in_ci = (ci_lo <= 0.0 <= ci_hi)
+    
+    # Secondary criterion: r above mock 5th percentile?
+    r_above_floor = (r_linear > -0.0732)
+    
+    if alpha_zero_in_ci and r_above_floor:
+        outcome = "OUTCOME A — Strong support for fixed-contrast domains"
+    elif not alpha_zero_in_ci and not r_above_floor:
+        outcome = "OUTCOME C — FAIL (falsification statement fires)"
+    elif not alpha_zero_in_ci or not r_above_floor:
+        outcome = "OUTCOME C — FAIL (falsification statement fires)"
+    else:
+        outcome = "OUTCOME B — Weak/marginal"
+
+    Print:
+        "=== VOID-DOMAIN v1 FINAL RESULT ==="
+        "α = 0 inside 95% CI:  {alpha_zero_in_ci}"
+        "r > mock 5th pct (-0.0732): {r_above_floor}"
+        "Falsification fires:  {not (alpha_zero_in_ci and r_above_floor)}"
+        ""
+        "*** {outcome} ***"
+        "===================================="
+
+Run run_real_fit() and show complete output from all five parts.

@@ -4,12 +4,18 @@ import numpy as np
 import pandas as pd
 from astropy.cosmology import FlatLambdaCDM
 
+from scipy import stats as sp_stats
+from scipy.odr import ODR, Model, RealData
+
 from void_domain.manifest import (
     ANNULUS_INNER_FACTOR,
     ANNULUS_OUTER_FACTOR,
     MIN_CLUSTERS_PER_VOID,
     VOID_Z_MIN,
     VOID_Z_MAX,
+    FINAL_MOCK_5PCT_R,
+    FALSIFICATION_STATEMENT,
+    RANDOM_SEED,
 )
 
 DATA_DIR = os.path.join(os.path.dirname(__file__), "data")
@@ -216,6 +222,132 @@ Median N_clusters/annulus: {df_cut['N_in_annulus'].median():.1f}
 ---
 RAW DATA ONLY — fit and outcome pending Grok CP3 review
 ====================================================""")
+
+
+REAL_CUT_PKL = os.path.join(CHECKPOINTS_DIR, "real_void_table_cut.pkl")
+REAL_FIT_PKL = os.path.join(CHECKPOINTS_DIR, "real_fit_results.pkl")
+
+
+def run_real_fit():
+    df = pd.read_pickle(REAL_CUT_PKL)
+    n_all = len(df)
+
+    df_pos = df[df["delta"] > 0].reset_index(drop=True)
+    n_pos = len(df_pos)
+    n_neg = n_all - n_pos
+
+    print(f"Voids with delta > 0 (log-log fit): N = {n_pos}")
+    print(f"Voids with delta <= 0 (excluded from log-log): N = {n_neg}")
+
+    print("\n--- PART A: Linear fit (all voids) ---")
+    delta_all = df["delta"].values
+    r_all = df["R_void_mpc"].values
+    slope, intercept, r_linear, p_linear, se = sp_stats.linregress(delta_all, r_all)
+    print("Linear fit (all voids):")
+    print(f"  slope = {slope:.4f} ± {se:.4f}")
+    print(f"  Pearson r = {r_linear:.4f}")
+    print(f"  p-value = {p_linear:.4e}")
+
+    print("\n--- PART B: Log-log fit (delta > 0 voids) ---")
+    x = np.log10(df_pos["delta"].values)
+    y = np.log10(df_pos["R_void_mpc"].values)
+
+    def linear_func(B, x):
+        return B[0] * x + B[1]
+
+    model = Model(linear_func)
+    data = RealData(x, y)
+    odr_obj = ODR(data, model, beta0=[0.0, 1.5])
+    output = odr_obj.run()
+    alpha = output.beta[0]
+    beta_intercept = output.beta[1]
+    sigma_alpha = output.sd_beta[0]
+    r_loglog = np.corrcoef(x, y)[0, 1]
+    residuals = y - (alpha * x + beta_intercept)
+    chi2_dof = np.sum(residuals ** 2) / (len(x) - 2)
+    print("Log-log fit (delta > 0 voids):")
+    print(f"  α = {alpha:.4f} ± {sigma_alpha:.4f}")
+    print(f"  Pearson r = {r_loglog:.4f}")
+    print(f"  reduced χ²/dof = {chi2_dof:.4f}")
+    print(f"  N used = {n_pos}")
+
+    print("\n--- PART C: Bootstrap 95% CI on α ---")
+    np.random.seed(RANDOM_SEED)
+    alpha_boot = []
+    for _ in range(1000):
+        idx = np.random.choice(len(x), len(x), replace=True)
+        xb = x[idx]
+        yb = y[idx]
+        data_b = RealData(xb, yb)
+        odr_b = ODR(data_b, model, beta0=[0.0, 1.5])
+        out_b = odr_b.run()
+        alpha_boot.append(out_b.beta[0])
+    alpha_boot = np.array(alpha_boot)
+    ci_lo = np.percentile(alpha_boot, 2.5)
+    ci_hi = np.percentile(alpha_boot, 97.5)
+    print(f"Bootstrap 95% CI on α: [{ci_lo:.4f}, {ci_hi:.4f}]")
+    alpha_zero_in_ci = (ci_lo <= 0.0 <= ci_hi)
+    print(f"α = 0 inside 95% CI: {alpha_zero_in_ci}")
+
+    print("\n--- PART D: 1000× label shuffle null test ---")
+    np.random.seed(RANDOM_SEED)
+    null_r = []
+    delta_shuf = delta_all.copy()
+    for _ in range(1000):
+        np.random.shuffle(delta_shuf)
+        _, _, r_s, _, _ = sp_stats.linregress(delta_shuf, r_all)
+        null_r.append(r_s)
+    null_r = np.array(null_r)
+    p_null = np.mean(np.abs(null_r) >= np.abs(r_linear))
+    print(f"Null shuffle p-value: {p_null:.4f}")
+    print(f"Real |r| beats {100 * (1 - p_null):.1f}% of null shuffles")
+
+    print("\n--- PART E: Decision Tree ---")
+    print(f"Falsification statement:\n  {FALSIFICATION_STATEMENT}\n")
+
+    r_above_floor = (r_linear > FINAL_MOCK_5PCT_R)
+
+    if alpha_zero_in_ci and r_above_floor:
+        outcome = "OUTCOME A — Strong support for fixed-contrast domains"
+    elif not alpha_zero_in_ci and not r_above_floor:
+        outcome = "OUTCOME C — FAIL (falsification statement fires)"
+    elif not alpha_zero_in_ci or not r_above_floor:
+        outcome = "OUTCOME C — FAIL (falsification statement fires)"
+    else:
+        outcome = "OUTCOME B — Weak/marginal"
+
+    falsification_fires = not (alpha_zero_in_ci and r_above_floor)
+
+    print("=== VOID-DOMAIN v1 FINAL RESULT ===")
+    print(f"α = 0 inside 95% CI:  {alpha_zero_in_ci}")
+    print(f"r > mock 5th pct ({FINAL_MOCK_5PCT_R}): {r_above_floor}")
+    print(f"Falsification fires:  {falsification_fires}")
+    print()
+    print(f"*** {outcome} ***")
+    print("====================================")
+
+    results = {
+        "slope_linear": slope,
+        "se_linear": se,
+        "r_linear": r_linear,
+        "p_linear": p_linear,
+        "alpha_loglog": alpha,
+        "sigma_alpha": sigma_alpha,
+        "r_loglog": r_loglog,
+        "chi2_dof": chi2_dof,
+        "n_pos": n_pos,
+        "ci_lo": ci_lo,
+        "ci_hi": ci_hi,
+        "alpha_zero_in_ci": alpha_zero_in_ci,
+        "null_r": null_r,
+        "p_null": p_null,
+        "r_above_floor": r_above_floor,
+        "outcome": outcome,
+    }
+    with open(REAL_FIT_PKL, "wb") as f:
+        pickle.dump(results, f)
+
+    return results
 
 
 if __name__ == "__main__":
