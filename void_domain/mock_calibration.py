@@ -512,6 +512,133 @@ def run_mock_fit(df):
     return results
 
 
+DELTA_TABLE_PATH = os.path.join(CHECKPOINTS_DIR, "mock_void_table_delta.pkl")
+DELTA_FIT_PATH = os.path.join(CHECKPOINTS_DIR, "mock_fit_delta_results.pkl")
+
+
+def run_density_contrast_pipeline():
+    from scipy.stats import linregress
+
+    df_groups = pd.read_csv(GROUPS_WITHPOS_PATH)
+    total_mass = df_groups["mass_200c_1e14Msun"].sum()
+    box_vol = TNG300_BOX_SIZE ** 3
+    rho_mean = total_mass / box_vol
+
+    print("=== STEP 1: Cosmic mean density ===")
+    print(f"Total group mass: {total_mass:.4f} × 10^14 Msun")
+    print(f"Box volume: {box_vol:.0f} (Mpc/h)^3")
+    print(f"Cosmic mean density <ρ>: {rho_mean:.6f} × 10^14 Msun/(Mpc/h)^3")
+
+    print("\n=== STEP 2: Recompute M_surrounding as density contrast ===")
+    df = pd.read_pickle(MOCK_TABLE_PATH)
+
+    r = df["R_void_mpc"].values
+    v_ann = (4.0 / 3.0) * np.pi * 56.0 * r ** 3
+    rho_ann = df["M_surrounding_1e14Msun"].values / v_ann
+    delta = (rho_ann - rho_mean) / rho_mean
+
+    df["V_annulus_mpc3"] = v_ann
+    df["rho_annulus"] = rho_ann
+    df["delta"] = delta
+
+    os.makedirs(CHECKPOINTS_DIR, exist_ok=True)
+    df.to_pickle(DELTA_TABLE_PATH)
+
+    n_total = len(df)
+    n_neg = int((delta < 0).sum())
+    n_pos = int((delta > 0).sum())
+
+    print(f"delta range: {delta.min():.4f} to {delta.max():.4f}")
+    print(f"Median delta: {np.median(delta):.4f}")
+    print(f"Negative delta voids (underdense annuli): {n_neg} / {n_total}")
+    print(f"First 3 rows:")
+    print(df[["void_id", "R_void_mpc", "delta"]].head(3).to_string(index=False))
+
+    print("\n=== STEP 3: Fit R_void vs delta ===")
+
+    r_void_all = df["R_void_mpc"].values
+    delta_all = df["delta"].values
+
+    slope_a, intercept_b, r_lin, p_lin, _ = linregress(delta_all, r_void_all)
+    print("Approach A (linear, all voids):")
+    print(f"  slope a = {slope_a:.4f}, intercept b = {intercept_b:.4f}")
+    print(f"  r = {r_lin:.4f}, p = {p_lin:.4e}")
+
+    mask_pos = delta_all > 0
+    n_log = int(mask_pos.sum())
+    log_r_pos = np.log10(r_void_all[mask_pos])
+    log_d_pos = np.log10(delta_all[mask_pos])
+
+    alpha_odr, sigma_odr = _odr_fit(log_d_pos, log_r_pos)
+    r_log, _ = pearsonr(log_d_pos, log_r_pos)
+    resid = log_r_pos - (alpha_odr * log_d_pos + 0.0)
+    chi2_dof = np.sum(resid ** 2) / (n_log - 2)
+
+    print(f"\nApproach B (log-log, δ > 0 only):")
+    print(f"  α = {alpha_odr:.4f} ± {sigma_odr:.4f}")
+    print(f"  r = {r_log:.4f}")
+    print(f"  N used = {n_log}")
+    print(f"  χ²/dof = {chi2_dof:.4f}")
+
+    print(f"\n=== STEP 4: 1000× null shuffle (linear r) ===")
+    rng = np.random.default_rng(RANDOM_SEED)
+    null_r_dist = np.empty(NULL_SHUFFLE_N)
+    for i in range(NULL_SHUFFLE_N):
+        shuf_delta = rng.permutation(delta_all)
+        _, _, r_shuf, _, _ = linregress(shuf_delta, r_void_all)
+        null_r_dist[i] = r_shuf
+
+    null_r_median = np.median(null_r_dist)
+    null_r_95pct = np.percentile(null_r_dist, 95)
+    null_r_99pct = np.percentile(null_r_dist, 99)
+
+    results = {
+        "rho_mean": rho_mean,
+        "n_total": n_total,
+        "n_positive": n_pos,
+        "slope_a": slope_a,
+        "intercept_b": intercept_b,
+        "r_linear": r_lin,
+        "p_linear": p_lin,
+        "alpha_odr": alpha_odr,
+        "sigma_odr": sigma_odr,
+        "r_log": r_log,
+        "n_log": n_log,
+        "chi2_dof": chi2_dof,
+        "null_r_dist": null_r_dist,
+        "null_r_median": null_r_median,
+        "null_r_95pct": null_r_95pct,
+        "null_r_99pct": null_r_99pct,
+    }
+
+    with open(DELTA_FIT_PATH, "wb") as f:
+        pickle.dump(results, f)
+
+    print(f"\n=== STEP 5: Density Contrast Mock Report ===")
+    print(f"""
+=== VOID-DOMAIN v1 Density Contrast Mock Report ===
+Definition:     δ = (ρ_annulus − ⟨ρ⟩) / ⟨ρ⟩
+Cosmic mean ρ:  {rho_mean:.6f} × 10^14 Msun/(Mpc/h)^3
+N voids:        {n_total} total, {n_pos} with δ > 0
+---
+Approach A (linear, all voids):
+  slope a = {slope_a:.4f}, r = {r_lin:.4f}, p = {p_lin:.4e}
+Approach B (log-log, δ > 0 only):
+  α = {alpha_odr:.4f} ± {sigma_odr:.4f}, r = {r_log:.4f}
+  N used = {n_log}
+  χ²/dof = {chi2_dof:.4f}
+---
+Null shuffle (1000×, linear r):
+  Median r:   {null_r_median:.4f}
+  95th pct r: {null_r_95pct:.4f}
+  99th pct r: {null_r_99pct:.4f}
+---
+THRESHOLDS: NOT SET — awaiting Grok v1.4 predicted exponent
+====================================================""")
+
+    return results
+
+
 def finalise_thresholds(results, n_voids_total=474, n_voids_after_volcut=None):
     null_r_95pct = results["null_r_95pct"]
 
