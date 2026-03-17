@@ -1,6 +1,7 @@
 import os
 import pickle
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import numpy as np
 import pandas as pd
 import h5py
@@ -135,45 +136,49 @@ def fetch_tng300_positions():
     api_key = _get_api_key()
     headers = {"api-key": api_key}
 
-    max_chunk = 30
+    max_chunk = 150
     mass_threshold = 0.01
 
     print("Downloading TNG300-1 groupcat HDF5 chunks (positions + masses)...")
-    print(f"  Chunks 0–{max_chunk - 1} (contain all groups with M200c > {mass_threshold} × 10^14 M☉)")
+    print(f"  Chunks 0–{max_chunk - 1}, parallel (10 threads)")
 
-    all_pos = []
-    all_m200 = []
-    all_r200 = []
-    total_downloaded_mb = 0.0
-    group_id_offset = 0
-
-    for i in range(max_chunk):
+    def _download_one(i):
         url = f"http://www.tng-project.org/api/TNG300-1/files/groupcat-67.{i}.hdf5"
         resp = requests.get(url, headers=headers, timeout=120)
         resp.raise_for_status()
-        chunk_mb = len(resp.content) / (1024 * 1024)
-        total_downloaded_mb += chunk_mb
-
         tmp_path = os.path.join(DATA_DIR, f"_chunk_{i}.hdf5")
         with open(tmp_path, "wb") as f:
             f.write(resp.content)
-
         with h5py.File(tmp_path, "r") as hf:
-            n_groups = hf["Header"].attrs["Ngroups_ThisFile"]
-            if n_groups > 0:
-                all_pos.append(hf["Group"]["GroupPos"][:])
-                all_m200.append(hf["Group"]["Group_M_Crit200"][:])
-                all_r200.append(hf["Group"]["Group_R_Crit200"][:])
-
+            n = hf["Header"].attrs["Ngroups_ThisFile"]
+            pos = hf["Group"]["GroupPos"][:] if n > 0 else None
+            m200 = hf["Group"]["Group_M_Crit200"][:] if n > 0 else None
+            r200 = hf["Group"]["Group_R_Crit200"][:] if n > 0 else None
         os.remove(tmp_path)
+        return i, pos, m200, r200, len(resp.content)
 
-        if (i + 1) % 10 == 0 or i == max_chunk - 1:
-            n_so_far = sum(len(m) for m in all_m200)
-            print(f"  Chunk {i + 1}/{max_chunk} — {n_so_far} groups, {total_downloaded_mb:.1f} MB downloaded")
+    chunk_data = {}
+    total_bytes = 0
+    done = 0
+    with ThreadPoolExecutor(max_workers=10) as pool:
+        futures = {pool.submit(_download_one, i): i for i in range(max_chunk)}
+        for fut in as_completed(futures):
+            i, pos, m200, r200, nbytes = fut.result()
+            chunk_data[i] = (pos, m200, r200)
+            total_bytes += nbytes
+            done += 1
+            if done % 25 == 0 or done == max_chunk:
+                print(f"  {done}/{max_chunk} chunks downloaded ({total_bytes / (1024*1024):.0f} MB)")
 
-        pass
+    all_pos, all_m200, all_r200 = [], [], []
+    for i in sorted(chunk_data.keys()):
+        pos, m200, r200 = chunk_data[i]
+        if m200 is not None:
+            all_pos.append(pos)
+            all_m200.append(m200)
+            all_r200.append(r200)
 
-    print(f"  HDF5 download complete: {total_downloaded_mb:.1f} MB total")
+    print(f"  HDF5 download complete: {total_bytes / (1024*1024):.0f} MB total")
 
     print("\nParsing into DataFrame...")
     group_pos = np.concatenate(all_pos, axis=0)
