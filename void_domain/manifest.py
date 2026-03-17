@@ -15,11 +15,19 @@ VOID_Z_MAX             = 0.7
 CLUSTER_CATALOGUE_REF  = "redMaPPer DR8 — Rykoff et al. (2014) ApJ 785 104"
 CLUSTER_MASS_PROXY     = "M200c from richness-lambda conversion"
 
-# ── M_surrounding Definition (Geoffrey Thwaites, confirmed 13 March 2026) ───
+# ── M_surrounding Definition (Geoffrey Thwaites, updated 17 March 2026) ──────
 # PRIMARY: annulus method
 ANNULUS_INNER_FACTOR   = 2.0           # inner edge = 2 × R_void
 ANNULUS_OUTER_FACTOR   = 4.0           # outer edge = 4 × R_void
 MASS_UNIT              = 1e14          # solar masses
+
+M_SURROUNDING_DEFINITION = (
+    "Density contrast delta = (rho_annulus - rho_mean) / rho_mean. "
+    "rho_annulus = sum(M_200c in annulus) / V_annulus. "
+    "Annulus: 2 x R_void to 4 x R_void from void centre. "
+    "rho_mean = total group mass / box volume. "
+    "Locked per Geoffrey Thwaites directive 17 March 2026."
+)
 
 # SECONDARY (parallel, robustness only)
 SPHERE_FACTOR          = 3.0           # d < 3 × R_void sphere
@@ -29,7 +37,7 @@ SPHERE_FACTOR          = 3.0           # d < 3 × R_void sphere
 # Use catalogue-published R_eff = (3V/4π)^(1/3). Do NOT recompute.
 
 # ── Power-Law Fit ────────────────────────────────────────────────────────────
-SLOPE_TARGET           = 1.0 / 3.0    # α = 0.333...
+SLOPE_TARGET           = 0.0           # updated from 1/3 — density contrast prediction
 FIT_METHOD             = "ODR"         # orthogonal distance regression (primary)
 FIT_METHOD_SECONDARY   = "OLS"         # ordinary least squares (reported alongside)
 
@@ -44,13 +52,19 @@ PROVISIONAL_CHI2_MAX        = 1.5
 PROVISIONAL_SLOPE_TOL_STAT  = 0.08    # |α − 1/3| < 0.08 practical band
 MIN_N_VOIDS                 = 800      # minimum sample after cuts
 
-# Final thresholds written here after mock calibration:
-FINAL_R_OUTCOME_A      = None          # set by mock calibration
-FINAL_R_OUTCOME_B_LO   = None
-FINAL_R_OUTCOME_B_HI   = None
-FINAL_MOCK_MEDIAN_R    = None
-FINAL_MOCK_95PCT_R     = None
-MOCK_CALIBRATION_DATE  = None
+# Final thresholds locked after mock calibration (17 March 2026):
+FINAL_R_OUTCOME_A        = -0.0732   # r must exceed this (5th pct null)
+FINAL_R_OUTCOME_B_LO     = -0.0732   # 5th pct null
+FINAL_R_OUTCOME_B_HI     =  0.0729   # 95th pct null
+FINAL_MOCK_MEDIAN_R      =  0.0002
+FINAL_MOCK_5PCT_R        = -0.0732
+FINAL_MOCK_95PCT_R       =  0.0729
+FINAL_MOCK_99PCT_R       =  0.0999
+MOCK_CALIBRATION_DATE    = "2026-03-17"
+MOCK_N_VOIDS             = 474
+MOCK_SLOPE_ALPHA         = -0.0600
+MOCK_SLOPE_SIGMA         =  0.0131
+MOCK_SOURCE              = "Rodriguez-Medrano et al. 2024 TNG300 Popcorn voids"
 
 # ── Null Test ────────────────────────────────────────────────────────────────
 NULL_SHUFFLE_N         = 1000
@@ -70,9 +84,12 @@ SIM_VOID_CATALOGUE_REF = (
 # ── Falsification Statement (to be finalised at Checkpoint 3) ───────────────
 # Placeholder — exact wording locked before real-data run
 FALSIFICATION_STATEMENT = (
-    "PLACEHOLDER — to be sealed at Checkpoint 3 pre-seal review. "
-    "Pattern: if α deviates > 3σ from 1/3 OR real fit fails to beat "
-    "null distribution at 95th percentile, Outcome C is declared."
+    "VOID-DOMAIN v1 falsification statement (locked 17 March 2026): "
+    "If the fitted slope α deviates from 0 at >95% CL "
+    "OR the Pearson r < -0.0732 (mock 5th percentile null), "
+    "Outcome C is declared. This is a genuine FAIL for the "
+    "gravitational-influence-domain fixed-contrast hypothesis. "
+    "It does not falsify the broader TSM2 framework."
 )
 
 # ── Robustness Annulus Variants ──────────────────────────────────────────────
